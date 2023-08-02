@@ -1,0 +1,136 @@
+---
+title: "epicov_dashboard_2"
+format: 
+  html:
+    page-layout: custom
+editor: visual
+server: shiny
+---
+
+```{r}
+#| panel: input
+suppressWarnings(suppressMessages(library(plotly)))
+# invisible(lapply(paste0('package:', names(sessionInfo()$otherPkgs)), detach, character.only=TRUE, unload=TRUE))
+
+df <- readRDS('feather_cleaned.RDS') 
+
+unique_covv_variants <- unique(df$covv_variant)
+
+positions <- c('N-terminal',
+               'RBD',
+               'Fusion peptide',
+               'HR1 sequence',
+               'HR2 sequence',
+               'Transmembrane domain',
+               'Cytoplasmic domain')
+
+selectInput('variant', 'Select variant', unique_covv_variants)
+selectInput('positions', 'Select spike segment', positions, selected = 'RBD')
+```
+
+```{r}
+#| panel: fill
+plotlyOutput('heatmap')
+plotlyOutput('lineplot')
+```
+
+```{r}
+#| context: server
+library(plotly)
+library(tidyverse)
+library(arrow)
+library(scales)
+library(data.table)
+library(tidytable)
+library(fastmatch)
+library(lubridate)
+library(shiny)
+
+df <- readRDS('feather_cleaned.RDS') 
+
+# Define regions of interest in the spike region, and their positions.
+positions <- c('N-terminal',
+               'RBD',
+               'Fusion peptide',
+               'HR1 sequence',
+               'HR2 sequence',
+               'Transmembrane domain',
+               'Cytoplasmic domain')
+
+df_after_reaction <-
+  reactive({
+    df %>%
+      filter(
+        covv_variant == input$variant,
+        region == input$positions,
+        # covv_variant == "VOI GRA (XBB.1.5+XBB.1.5.*) first detected in Austria/India/Bangladesh",
+        # region == 'N-terminal'
+      )
+})
+
+output$heatmap <- renderPlotly({
+
+  p <- ggplot(
+    # data = df_after_reaction,
+    data = df_after_reaction(),
+    aes(x = factor(position),
+        y = full_amino_acids,
+        fill = proportion,
+        text = text_label)) +
+    geom_tile(col = 'black') +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    labs(x = 'position',
+         y = 'New amino acid')
+
+  ggplotly(p, tooltip = 'text')
+
+  })
+
+number_of_unique_mutations <-
+  reactive({
+  # df_after_reaction %>%
+  df_after_reaction() %>%
+  group_by(position) %>%
+  summarize(unique_mutations = sum(proportion > 0))
+})
+
+# Create a dataframe from start to end positions of the desired spike region, including regions with no mutations.
+# Join the previous dataframe to this one, such that residues with no mutations have 0 unique mutations.
+mutation_count <-
+  reactive({
+  data.frame(
+    position = min(df_after_reaction()$position):max(df_after_reaction()$position)
+    ) %>%
+  left_join(
+    # number_of_unique_mutations
+    number_of_unique_mutations()
+    ) %>%
+  mutate(number_of_unique_mutations = case_when(is.na(unique_mutations) ~ 0,
+                                                T ~ unique_mutations))
+})
+
+
+output$lineplot <- renderPlotly({
+
+  p <- ggplot(
+    mutation_count()
+    # mutation_count
+    ) +
+    geom_line(aes(x = position,
+                  y = number_of_unique_mutations)) +
+    # Only label the positions where the unique mutation count is not NA.
+    scale_x_continuous(breaks = mutation_count()$position) +
+    scale_y_continuous(breaks = unique(mutation_count()$number_of_unique_mutations))  +
+    
+    # scale_x_continuous(breaks = mutation_count$position) +
+    # scale_y_continuous(breaks = unique(mutation_count$number_of_unique_mutations))  +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    labs(y = 'No. of unique mutations')
+
+  p
+})
+
+```
+
